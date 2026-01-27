@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiManager.h>
+#include <Preferences.h>
 
 // ======================= Pin Mapping (same as your code) =======================
 #define RELAY0 23
@@ -25,26 +27,95 @@
 bool relay0 = false; // relay0 flag, currently using only one for development use
 
 // ======================= Network Config =======================
-const char* WIFI_SSID = "test1";
-const char* WIFI_PASS = "b7badb97";
-
-const char* HOST_IP = "192.168.0.50";
+char HOST_IP[16] = "192.168.0.50";
+char DEVICE_ID[16] = "DEV001";
 const uint16_t HOST_PORT = 8000;
-const char* DEVICE_ID = "DEV001";
+float PRICE = 5.00f;
+int INVOICE_DURATION = 60;
+char DESCRIPTION[64] = "Sim payment";
+
+static Preferences prefs;
 
 // ======================= HTTP Helpers =======================
-bool connectWiFi(uint32_t timeoutMs = 10000) {
+bool connectWiFi(uint32_t portalTimeoutMs = 180000) {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
-    delay(200);
-    Serial.println("Trying to Connect Wifi");
+  WiFiManager wm;
+  wm.setConfigPortalTimeout((uint16_t)(portalTimeoutMs / 1000));
+
+  WiFiManagerParameter hostParam("host_ip", "Host IP", HOST_IP, sizeof(HOST_IP));
+  WiFiManagerParameter deviceParam("device_id", "Device ID", DEVICE_ID, sizeof(DEVICE_ID));
+  char priceBuf[16];
+  snprintf(priceBuf, sizeof(priceBuf), "%.2f", PRICE);
+  char durationBuf[12];
+  snprintf(durationBuf, sizeof(durationBuf), "%d", INVOICE_DURATION);
+  WiFiManagerParameter priceParam("price", "Price", priceBuf, sizeof(priceBuf));
+  WiFiManagerParameter invDurParam("invoice_duration", "Duration (sec)", durationBuf, sizeof(durationBuf));
+  WiFiManagerParameter descParam("description", "Description", DESCRIPTION, sizeof(DESCRIPTION));
+  wm.addParameter(&hostParam);
+  wm.addParameter(&deviceParam);
+  wm.addParameter(&priceParam);
+  wm.addParameter(&invDurParam);
+  wm.addParameter(&descParam);
+
+  bool ok = wm.autoConnect("Scanpay-Setup");
+  if (!ok) {
+    return false;
   }
 
-  return (WiFi.status() == WL_CONNECTED);
-  
+  const char* hostVal = hostParam.getValue();
+  if (hostVal && hostVal[0] != '\0') {
+    strncpy(HOST_IP, hostVal, sizeof(HOST_IP));
+    HOST_IP[sizeof(HOST_IP) - 1] = '\0';
+  }
+
+  const char* deviceVal = deviceParam.getValue();
+  if (deviceVal && deviceVal[0] != '\0') {
+    strncpy(DEVICE_ID, deviceVal, sizeof(DEVICE_ID));
+    DEVICE_ID[sizeof(DEVICE_ID) - 1] = '\0';
+  }
+
+  const char* priceVal = priceParam.getValue();
+  if (priceVal && priceVal[0] != '\0') {
+    PRICE = (float)atof(priceVal);
+  }
+
+  const char* invDurVal = invDurParam.getValue();
+  if (invDurVal && invDurVal[0] != '\0') {
+    INVOICE_DURATION = atoi(invDurVal);
+  }
+
+  const char* descVal = descParam.getValue();
+  if (descVal && descVal[0] != '\0') {
+    strncpy(DESCRIPTION, descVal, sizeof(DESCRIPTION));
+    DESCRIPTION[sizeof(DESCRIPTION) - 1] = '\0';
+  }
+
+  return true;
+}
+
+void loadPrefs() {
+  if (!prefs.begin("scanpay", true)) {
+    return;
+  }
+  prefs.getString("host_ip", HOST_IP, sizeof(HOST_IP));
+  prefs.getString("device_id", DEVICE_ID, sizeof(DEVICE_ID));
+  PRICE = prefs.getFloat("price", PRICE);
+  INVOICE_DURATION = prefs.getInt("invoice_duration", INVOICE_DURATION);
+  prefs.getString("description", DESCRIPTION, sizeof(DESCRIPTION));
+  prefs.end();
+}
+
+void savePrefs() {
+  if (!prefs.begin("scanpay", false)) {
+    return;
+  }
+  prefs.putString("host_ip", HOST_IP);
+  prefs.putString("device_id", DEVICE_ID);
+  prefs.putFloat("price", PRICE);
+  prefs.putInt("invoice_duration", INVOICE_DURATION);
+  prefs.putString("description", DESCRIPTION);
+  prefs.end();
 }
 
 // ======================= Relay & Opto Function ====================
@@ -85,9 +156,76 @@ static bool serviceEnabled[4] = { false, false, false, false };
 static uint32_t serviceDurationMs[4] = { 0, 0, 0, 0 };
 static bool serviceOptoState[4] = { false, false, false, false };
 static uint32_t lastServiceTickMs = 0;
+static uint32_t lastSvcLogMs[4] = { 0, 0, 0, 0 };
+static uint32_t lastPollMs = 0;
+static bool action = false;
+static int duration = 0;
+static bool complete = false;
+static uint32_t actionStartMs = 0;
 
 inline bool timeReached(uint32_t now, uint32_t target) {
   return (int32_t)(now - target) >= 0;
+}
+
+inline void svcLog(uint8_t ch, const char* msg, uint32_t now) {
+  if (ch >= 4) return;
+  if (!timeReached(now, lastSvcLogMs[ch] + 5000)) return;
+  lastSvcLogMs[ch] = now;
+  Serial.print("[svc] ch=");
+  Serial.print(ch);
+  Serial.print(" state=");
+  Serial.println(msg);
+}
+
+inline bool jsonHas(const String& body, const char* key, const char* value) {
+  String needle = String("\"") + key + "\":" + value;
+  return body.indexOf(needle) >= 0;
+}
+
+inline bool jsonInt(const String& body, const char* key, int* out) {
+  if (!out) return false;
+  String needle = String("\"") + key + "\":";
+  int idx = body.indexOf(needle);
+  if (idx < 0) return false;
+  idx += needle.length();
+  while (idx < (int)body.length() && (body[idx] == ' ' || body[idx] == '\t')) idx++;
+  int sign = 1;
+  if (idx < (int)body.length() && body[idx] == '-') {
+    sign = -1;
+    idx++;
+  }
+  long val = 0;
+  bool any = false;
+  while (idx < (int)body.length()) {
+    char c = body[idx];
+    if (c < '0' || c > '9') break;
+    any = true;
+    val = val * 10 + (c - '0');
+    idx++;
+  }
+  if (!any) return false;
+  *out = (int)(val * sign);
+  return true;
+}
+
+inline void handleHttpBody(const String& body) {
+  if (jsonHas(body, "has_command", "false")) {
+    action = false;
+    duration = 0;
+    complete = false;
+    actionStartMs = 0;
+    return;
+  }
+  if (jsonHas(body, "has_command", "true")) {
+    int actionVal = 0;
+    int durVal = 0;
+    (void)jsonInt(body, "action", &actionVal);
+    (void)jsonInt(body, "duration_sec", &durVal);
+    complete = false;
+    action = (actionVal != 0);
+    duration += durVal;
+    actionStartMs = 0;
+  }
 }
 
 inline void toLowerInPlace(char* s) {
@@ -130,9 +268,7 @@ inline void servicehandler(uint8_t ch, bool on, uint32_t durationMs, bool optost
   uint32_t now = millis();
 
   if (!on) {
-    Serial.print("[svc] ch=");
-    Serial.print(ch);
-    Serial.println(" state=off");
+    svcLog(ch, "off", now);
     if (relayState[ch]) {
       relayWrite(ch, false);
       relayState[ch] = false;
@@ -144,17 +280,13 @@ inline void servicehandler(uint8_t ch, bool on, uint32_t durationMs, bool optost
 
   // If opto is active, skip the timed pulse logic.
   if (optostate) {
-    Serial.print("[svc] ch=");
-    Serial.print(ch);
-    Serial.println(" state=opto_active_skip");
+    svcLog(ch, "opto_active_skip", now);
     return;
   }
 
   // End an active pulse.
   if (relayState[ch] && pulseUntilMs[ch] > 0 && timeReached(now, pulseUntilMs[ch])) {
-    Serial.print("[svc] ch=");
-    Serial.print(ch);
-    Serial.println(" state=pulse_end");
+    svcLog(ch, "pulse_end", now);
     relayWrite(ch, false);
     relayState[ch] = false;
     pulseUntilMs[ch] = 0;
@@ -164,9 +296,7 @@ inline void servicehandler(uint8_t ch, bool on, uint32_t durationMs, bool optost
 
   // Start a new 1s pulse after remaining OFF for durationMs.
   if (!relayState[ch] && durationMs > 0 && timeReached(now, lastServiceMs[ch] + durationMs)) {
-    Serial.print("[svc] ch=");
-    Serial.print(ch);
-    Serial.println(" state=pulse_start");
+    svcLog(ch, "pulse_start", now);
     relayWrite(ch, true);
     relayState[ch] = true;
     pulseUntilMs[ch] = now + 1000;
@@ -270,9 +400,22 @@ void setup() {
   delay(200);
   Serial.println("=== Relay Response and Web Service Starting ===");
 
+  loadPrefs();
+
   if (connectWiFi()) {
     Serial.print("WiFi connected, IP=");
     Serial.println(WiFi.localIP());
+    Serial.print("Host IP param=");
+    Serial.println(HOST_IP);
+    Serial.print("Device ID param=");
+    Serial.println(DEVICE_ID);
+    Serial.print("Price param=");
+    Serial.println(PRICE, 2);
+    Serial.print("Invoice duration param=");
+    Serial.println(INVOICE_DURATION);
+    Serial.print("Description param=");
+    Serial.println(DESCRIPTION);
+    savePrefs();
   } else {
     Serial.println("WiFi connect failed");
   }
@@ -289,6 +432,59 @@ void loop() {
   uint32_t now = millis();
 
   serialHandler();
+
+  if (action) {
+    if (actionStartMs == 0) {
+      actionStartMs = now;
+    }
+    if (duration > 0 && timeReached(now, actionStartMs + (uint32_t)duration * 1000U)) {
+      complete = true;
+    }
+  } else {
+    actionStartMs = 0;
+  }
+
+  if (complete && action && WiFi.status() == WL_CONNECTED) {
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s:8000/api/device/%s/request-invoice/", HOST_IP, DEVICE_ID);
+    HTTPClient http;
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"amount\":%.2f,\"description\":\"%s\",\"duration_sec\":%d}",
+             PRICE, DESCRIPTION, INVOICE_DURATION);
+    int code = http.POST((uint8_t*)body, strlen(body));
+    if (code >= 200 && code < 300) {
+      complete = false;
+      action = false;
+      duration = 0;
+      actionStartMs = 0;
+    } else {
+      Serial.print("[http] post error ");
+      Serial.println(code);
+    }
+    http.end();
+  }
+
+  if (!action && WiFi.status() == WL_CONNECTED && timeReached(now, lastPollMs + 5000)) {
+    lastPollMs = now;
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s:8000/api/device/%s/next/", HOST_IP, DEVICE_ID);
+    HTTPClient http;
+    http.begin(url);
+    int code = http.GET();
+    if (code > 0) {
+      String body = http.getString();
+      Serial.print("[http] ");
+      Serial.println(body);
+      handleHttpBody(body);
+    } else {
+      Serial.print("[http] error ");
+      Serial.println(code);
+    }
+    http.end();
+  }
 
   if ((now % 1000) == 0 && now != lastServiceTickMs) {
     lastServiceTickMs = now;
