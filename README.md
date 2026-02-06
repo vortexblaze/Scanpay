@@ -8,6 +8,14 @@ Small PlatformIO/Arduino project for an ESP32 that drives 4 relays, reads 4 opto
 - Serial debug commands for manual relay toggling and one-shot service checks.
 - WiFi setup scaffold (see `src/main.cpp`).
 
+## Updates
+
+### 2026-02-06
+- Removed serial test command parser; status is now printed once per second.
+- Added round-robin multi-channel relay scheduling on a single poll stream.
+- Relay behavior: 1-second pulse, then channel is occupied until `duration_sec` cooldown expires.
+- Polling for new commands only happens when at least one channel is free.
+
 ## Hardware
 - ESP32 DevKit (board: `esp32dev`)
 - 4-channel relay module
