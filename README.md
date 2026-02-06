@@ -64,10 +64,10 @@ Notes:
 
 - [X] Design and implement a QR-code based payment workflow (mock → real-ready)
 - [ ] Achieve ≥95% functional accuracy for payment-to-locker activation
-- [ ] Multiple Channel unlock and under single QR Code
+- [ ] Multiple Channel unlock and under single QR Code ( 2 Units )
 - [ ] API-Based Communication between server and client device (ESP32)
 - [ ] Integrate ESP32-controlled relay to actuate locker mechanism
-- [X] Optimize system for low power consumption (≥20% reduction vs baseline)
+- [ ] Optimize system for low power consumption (≥20% reduction vs baseline) ( Require Proof )
 - [X] Ensure system reliability under intermittent Wi-Fi conditions
 - [X] Provide basic status feedback (LED / log-based)
 
@@ -87,6 +87,7 @@ Notes:
 - [X] GPIO control logic for relay activation
 - [X] Timed pulse control to prevent solenoid overheating
 - [ ] Fallback handling for network instability
+- [ ] Multi Channel Lock Control 
 
 ### Hardware
 - [X] ESP32-based controller board
@@ -137,6 +138,11 @@ Will be updated within 3 Feb 2025
 
 # System BOM and SLD Diagram 
 Will be updated within 3 Feb 2025
+ ## This Include 
+ - Component Selection Reason
+ - Wiring & Signal Flow
+ - BOM
+
 
 ## ESP32 Development Progress (QR Smart Locker)
 
@@ -179,5 +185,4 @@ Will be updated within 3 Feb 2025
 - Perform end-to-end payment → unlock validation
 - Hardware design and Installation
 - Multi Locker control within same backend architecture
-
 
