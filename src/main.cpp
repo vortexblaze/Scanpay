@@ -14,6 +14,7 @@
 #define OPTO1 26
 #define OPTO2 27
 #define OPTO3 33
+#define WIFI_CONFIG_PIN 17
 
 // ======================= Polarity Config =======================
 // If your relay is active LOW (common for opto-isolated relay boards), keep 1.
@@ -35,9 +36,11 @@ char DESCRIPTION[64] = "Sim payment";
 char ACTIVE_DEVICE_ID[16] = "";
 
 static Preferences prefs;
+static const char* NVS_NS = "scanpay";
+static const char* NVS_KEY_INV_DURATION = "inv_duration";
 
 // ======================= HTTP Helpers =======================
-bool connectWiFi(uint32_t portalTimeoutMs = 180000) {
+bool connectWiFi(bool forceConfigPortal = false, uint32_t portalTimeoutMs = 180000) {
   WiFi.mode(WIFI_STA);
 
   WiFiManager wm;
@@ -60,7 +63,13 @@ bool connectWiFi(uint32_t portalTimeoutMs = 180000) {
   wm.addParameter(&invDurParam);
   wm.addParameter(&descParam);
 
-  bool ok = wm.autoConnect("Scanpay-Setup");
+  bool ok = false;
+  if (forceConfigPortal) {
+    Serial.println("GPIO17 LOW at boot -> starting WiFiManager portal");
+    ok = wm.startConfigPortal("Scanpay-Setup");
+  } else {
+    ok = wm.autoConnect("Scanpay-Setup");
+  }
   if (!ok) {
     return false;
   }
@@ -103,27 +112,27 @@ bool connectWiFi(uint32_t portalTimeoutMs = 180000) {
 }
 
 void loadPrefs() {
-  if (!prefs.begin("scanpay", true)) {
+  if (!prefs.begin(NVS_NS, true)) {
     return;
   }
   prefs.getString("host_ip", HOST_IP, sizeof(HOST_IP));
   prefs.getString("device_id", DEVICE_ID, sizeof(DEVICE_ID));
   prefs.getString("device_id_2", DEVICE_ID2, sizeof(DEVICE_ID2));
   PRICE = prefs.getFloat("price", PRICE);
-  INVOICE_DURATION = prefs.getInt("invoice_duration", INVOICE_DURATION);
+  INVOICE_DURATION = prefs.getInt(NVS_KEY_INV_DURATION, INVOICE_DURATION);
   prefs.getString("description", DESCRIPTION, sizeof(DESCRIPTION));
   prefs.end();
 }
 
 void savePrefs() {
-  if (!prefs.begin("scanpay", false)) {
+  if (!prefs.begin(NVS_NS, false)) {
     return;
   }
   prefs.putString("host_ip", HOST_IP);
   prefs.putString("device_id", DEVICE_ID);
   prefs.putString("device_id_2", DEVICE_ID2);
   prefs.putFloat("price", PRICE);
-  prefs.putInt("invoice_duration", INVOICE_DURATION);
+  prefs.putInt(NVS_KEY_INV_DURATION, INVOICE_DURATION);
   prefs.putString("description", DESCRIPTION);
   prefs.end();
 }
@@ -172,6 +181,10 @@ static bool action2 = false;
 static int duration2 = 0;
 static bool complete2 = false;
 static uint32_t actionStartMs2 = 0;
+static int lastCommandId[2] = { -1, -1 };
+static bool optoLast[4] = { false, false, false, false };
+static bool optoInitDone = false;
+static bool wifiConfigPinWasActive = false;
 
 inline bool timeReached(uint32_t now, uint32_t target) {
   return (int32_t)(now - target) >= 0;
@@ -216,10 +229,9 @@ inline bool handleHttpBody(const String& body, uint8_t deviceIndex) {
   uint32_t* startRef = (deviceIndex == 0) ? &actionStartMs : &actionStartMs2;
 
   if (jsonHas(body, "has_command", "false")) {
-    *actionRef = false;
-    *durationRef = 0;
-    *completeRef = false;
-    *startRef = 0;
+    // "No command" means no new work from backend.
+    // Keep local action/duration state so an in-progress cycle can finish
+    // and trigger invoice generation.
     if (pendingCommand && pendingDeviceIndex == (int8_t)deviceIndex) {
       pendingCommand = false;
       pendingDurationMs = 0;
@@ -230,16 +242,25 @@ inline bool handleHttpBody(const String& body, uint8_t deviceIndex) {
   if (jsonHas(body, "has_command", "true")) {
     int actionVal = 0;
     int durVal = 0;
+    int cmdId = -1;
     (void)jsonInt(body, "action", &actionVal);
     (void)jsonInt(body, "duration_sec", &durVal);
+    if (jsonInt(body, "command_id", &cmdId) && cmdId >= 0 &&
+        lastCommandId[deviceIndex] == cmdId) {
+      // Duplicate command from backend poll, ignore restart.
+      return true;
+    }
+    if (cmdId >= 0) {
+      lastCommandId[deviceIndex] = cmdId;
+    }
+    if (durVal < 0) durVal = 0;
     *completeRef = false;
     *actionRef = (actionVal != 0);
-    *durationRef += durVal;
+    *durationRef = durVal;
     *startRef = 0;
     if (actionVal != 0 && !pendingCommand) {
       pendingCommand = true;
       pendingDeviceIndex = (int8_t)deviceIndex;
-      if (durVal < 0) durVal = 0;
       pendingDurationMs = (uint32_t)durVal * 1000U;
     }
     return true;
@@ -272,12 +293,16 @@ inline int8_t pickChannelRoundRobin(uint32_t now) {
   return -1;
 }
 
-inline void startRelayPulse(uint8_t ch, uint32_t cooldownMs, uint32_t now) {
+inline void startRelayPulse(uint8_t ch, uint32_t onMs, uint32_t now) {
   if (ch >= 4) return;
   relayWrite(ch, true);
   relayState[ch] = true;
-  pulseUntilMs[ch] = now + 1000;
-  relayCooldownUntilMs[ch] = now + cooldownMs;
+  pulseUntilMs[ch] = now + onMs;
+  relayCooldownUntilMs[ch] = now + onMs;
+  Serial.print("[relay] ch=");
+  Serial.print(ch);
+  Serial.print(" on_ms=");
+  Serial.println(onMs);
 }
 
 inline void updateRelayPulses(uint32_t now) {
@@ -286,8 +311,25 @@ inline void updateRelayPulses(uint32_t now) {
       relayWrite(ch, false);
       relayState[ch] = false;
       pulseUntilMs[ch] = 0;
+      Serial.print("[relay] ch=");
+      Serial.print(ch);
+      Serial.println(" off");
     }
   }
+}
+
+inline void logOptoChanges() {
+  for (uint8_t ch = 0; ch < 4; ch++) {
+    bool cur = optoReadTriggered(ch);
+    if (!optoInitDone || cur != optoLast[ch]) {
+      Serial.print("[opto] ch=");
+      Serial.print(ch);
+      Serial.print(" state=");
+      Serial.println(cur ? "active" : "inactive");
+      optoLast[ch] = cur;
+    }
+  }
+  optoInitDone = true;
 }
 
 void setup() {
@@ -295,9 +337,16 @@ void setup() {
   delay(200);
   Serial.println("=== Relay Response and Web Service Starting ===");
 
+  pinMode(WIFI_CONFIG_PIN, INPUT_PULLUP);
+  bool forceConfigPortal = (digitalRead(WIFI_CONFIG_PIN) == LOW);
+  wifiConfigPinWasActive = forceConfigPortal;
+  if (forceConfigPortal) {
+    Serial.println("Config pin active (GPIO17 to GND)");
+  }
+
   loadPrefs();
 
-  if (connectWiFi()) {
+  if (connectWiFi(forceConfigPortal)) {
     Serial.print("WiFi connected, IP=");
     Serial.println(WiFi.localIP());
     Serial.print("Host IP param=");
@@ -320,7 +369,11 @@ void setup() {
   for (int i = 0; i < 4; i++) {
     pinMode(relayPins[i], OUTPUT);
     relayWrite(i, false); // start OFF
-    pinMode(optoPins[i], INPUT);
+#if OPTO_ACTIVE_LOW
+    pinMode(optoPins[i], INPUT_PULLUP);
+#else
+    pinMode(optoPins[i], INPUT_PULLDOWN);
+#endif
   }
 
 }
@@ -353,8 +406,21 @@ inline bool pollNextForDevice(const char* deviceId, uint8_t deviceIndex) {
 
 void loop() {
   uint32_t now = millis();
+  bool wifiConfigPinActive = (digitalRead(WIFI_CONFIG_PIN) == LOW);
+
+  if (wifiConfigPinActive && !wifiConfigPinWasActive) {
+    Serial.println("Config pin active during runtime -> starting WiFiManager portal");
+    if (connectWiFi(true)) {
+      savePrefs();
+      Serial.println("WiFiManager runtime config complete");
+    } else {
+      Serial.println("WiFiManager runtime config failed/timeout");
+    }
+  }
+  wifiConfigPinWasActive = wifiConfigPinActive;
 
   updateRelayPulses(now);
+  logOptoChanges();
 
   if (pendingCommand) {
     int8_t ch = pickChannelRoundRobin(now);
@@ -393,10 +459,18 @@ void loop() {
     Serial.print(duration2);
     Serial.print(" complete2=");
     Serial.print(complete2 ? "1" : "0");
-    Serial.print(" relay0=");
-    Serial.print(relayState[0] ? "on" : "off");
-    Serial.print(" opto0=");
-    Serial.println(optoReadTriggered(0) ? "active" : "inactive");
+    Serial.print(" wifi_cfg=");
+    Serial.print(digitalRead(WIFI_CONFIG_PIN) == LOW ? "active" : "inactive");
+    Serial.print(" relay=");
+    Serial.print(relayState[0] ? "1" : "0");
+    Serial.print(relayState[1] ? "1" : "0");
+    Serial.print(relayState[2] ? "1" : "0");
+    Serial.print(relayState[3] ? "1" : "0");
+    Serial.print(" opto=");
+    Serial.print(optoReadTriggered(0) ? "1" : "0");
+    Serial.print(optoReadTriggered(1) ? "1" : "0");
+    Serial.print(optoReadTriggered(2) ? "1" : "0");
+    Serial.println(optoReadTriggered(3) ? "1" : "0");
   }
 
   if (action) {
@@ -433,6 +507,10 @@ void loop() {
              PRICE, DESCRIPTION, INVOICE_DURATION);
     int code = http.POST((uint8_t*)body, strlen(body));
     if (code >= 200 && code < 300) {
+      Serial.print("[http] request-invoice ok dev=");
+      Serial.print(DEVICE_ID);
+      Serial.print(" code=");
+      Serial.println(code);
       complete = false;
       action = false;
       duration = 0;
@@ -456,6 +534,10 @@ void loop() {
              PRICE, DESCRIPTION, INVOICE_DURATION);
     int code = http.POST((uint8_t*)body, strlen(body));
     if (code >= 200 && code < 300) {
+      Serial.print("[http] request-invoice ok dev=");
+      Serial.print(DEVICE_ID2);
+      Serial.print(" code=");
+      Serial.println(code);
       complete2 = false;
       action2 = false;
       duration2 = 0;
