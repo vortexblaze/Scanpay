@@ -54,7 +54,7 @@ bool connectWiFi(bool forceConfigPortal = false, uint32_t portalTimeoutMs = 1800
   char durationBuf[12];
   snprintf(durationBuf, sizeof(durationBuf), "%d", INVOICE_DURATION);
   WiFiManagerParameter priceParam("price", "Price", priceBuf, sizeof(priceBuf));
-  WiFiManagerParameter invDurParam("invoice_duration", "Duration (sec)", durationBuf, sizeof(durationBuf));
+  WiFiManagerParameter invDurParam(NVS_KEY_INV_DURATION, "Duration (sec)", durationBuf, sizeof(durationBuf));
   WiFiManagerParameter descParam("description", "Description", DESCRIPTION, sizeof(DESCRIPTION));
   wm.addParameter(&hostParam);
   wm.addParameter(&deviceParam);
