@@ -293,10 +293,15 @@ inline int8_t pickChannelRoundRobin(uint32_t now) {
   return -1;
 }
 
+
+
 inline void startRelayPulse(uint8_t ch, uint32_t onMs, uint32_t now) {
   if (ch >= 4) return;
   relayWrite(ch, true);
   relayState[ch] = true;
+  delay(50); // brief delay to ensure relay registers the pulse (adjust as needed)
+  relayWrite(ch, true);
+  relayWrite(ch, false); 
   pulseUntilMs[ch] = now + onMs;
   relayCooldownUntilMs[ch] = now + onMs;
   Serial.print("[relay] ch=");
@@ -308,7 +313,9 @@ inline void startRelayPulse(uint8_t ch, uint32_t onMs, uint32_t now) {
 inline void updateRelayPulses(uint32_t now) {
   for (uint8_t ch = 0; ch < 4; ch++) {
     if (relayState[ch] && pulseUntilMs[ch] > 0 && timeReached(now, pulseUntilMs[ch])) {
-      relayWrite(ch, false);
+      relayWrite(ch, true);
+      delay(50); // brief delay to ensure relay registers the pulse (adjust as needed)
+      relayWrite(ch, false); 
       relayState[ch] = false;
       pulseUntilMs[ch] = 0;
       Serial.print("[relay] ch=");
@@ -317,6 +324,8 @@ inline void updateRelayPulses(uint32_t now) {
     }
   }
 }
+
+
 
 inline void logOptoChanges() {
   for (uint8_t ch = 0; ch < 4; ch++) {
