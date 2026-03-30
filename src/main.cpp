@@ -101,7 +101,7 @@ void loadPrefs() {
   prefs.getString("host_ip", HOST_IP, sizeof(HOST_IP));
   prefs.getString("device_id", DEVICE_ID, sizeof(DEVICE_ID));
   PRICE = prefs.getFloat("price", PRICE);
-  INVOICE_DURATION = prefs.getInt("invoice_duration", INVOICE_DURATION);
+  INVOICE_DURATION = prefs.getInt("inv_dur", INVOICE_DURATION);
   prefs.getString("description", DESCRIPTION, sizeof(DESCRIPTION));
   prefs.end();
 }
@@ -113,7 +113,7 @@ void savePrefs() {
   prefs.putString("host_ip", HOST_IP);
   prefs.putString("device_id", DEVICE_ID);
   prefs.putFloat("price", PRICE);
-  prefs.putInt("invoice_duration", INVOICE_DURATION);
+  prefs.putInt("inv_dur", INVOICE_DURATION);
   prefs.putString("description", DESCRIPTION);
   prefs.end();
 }
@@ -206,6 +206,41 @@ inline bool jsonInt(const String& body, const char* key, int* out) {
   if (!any) return false;
   *out = (int)(val * sign);
   return true;
+}
+
+inline const char* wifiStatusName(wl_status_t st) {
+  switch (st) {
+    case WL_NO_SHIELD: return "NO_SHIELD";
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID";
+    case WL_SCAN_COMPLETED: return "SCAN_DONE";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+inline void logHttpError(HTTPClient& http, int code, const char* url, const char* tag) {
+  Serial.print("[http] ");
+  Serial.print(tag);
+  Serial.print(" url=");
+  Serial.print(url);
+  Serial.print(" code=");
+  Serial.print(code);
+  Serial.print(" err=");
+  Serial.print(http.errorToString(code));
+  Serial.print(" wifi=");
+  wl_status_t st = WiFi.status();
+  Serial.print(wifiStatusName(st));
+  if (st == WL_CONNECTED) {
+    Serial.print(" ip=");
+    Serial.print(WiFi.localIP());
+    Serial.print(" rssi=");
+    Serial.print(WiFi.RSSI());
+  }
+  Serial.println();
 }
 
 inline void handleHttpBody(const String& body) {
@@ -420,7 +455,7 @@ void setup() {
     Serial.println("WiFi connect failed");
   }
   
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 2; i++) {
     pinMode(relayPins[i], OUTPUT);
     relayWrite(i, false); // start OFF
   
@@ -429,6 +464,7 @@ void setup() {
 }
 
 void loop() {
+  
   uint32_t now = millis();
 
   serialHandler();
@@ -449,6 +485,7 @@ void loop() {
     snprintf(url, sizeof(url), "http://%s:8000/api/device/%s/request-invoice/", HOST_IP, DEVICE_ID);
     HTTPClient http;
     http.begin(url);
+    http.setTimeout(500); // Short timeout for invoice request
     http.addHeader("Content-Type", "application/json");
     char body[256];
     snprintf(body, sizeof(body),
@@ -461,18 +498,18 @@ void loop() {
       duration = 0;
       actionStartMs = 0;
     } else {
-      Serial.print("[http] post error ");
-      Serial.println(code);
+      logHttpError(http, code, url, "post");
     }
     http.end();
   }
 
   if (!action && WiFi.status() == WL_CONNECTED && timeReached(now, lastPollMs + 5000)) {
     lastPollMs = now;
-    char url[128];
-    snprintf(url, sizeof(url), "http://%s:8000/api/device/%s/next/", HOST_IP, DEVICE_ID);
+    char url[128]={"http://192.168.2.143:8000/api/device/DEV001/next/"};
+    //snprintf(url, sizeof(url), "http://%s:8000/api/device/%s/next/", HOST_IP, DEVICE_ID);
     HTTPClient http;
     http.begin(url);
+    http.setTimeout(500); // Short timeout for polling
     int code = http.GET();
     if (code > 0) {
       String body = http.getString();
@@ -480,15 +517,14 @@ void loop() {
       Serial.println(body);
       handleHttpBody(body);
     } else {
-      Serial.print("[http] error ");
-      Serial.println(code);
+      logHttpError(http, code, url, "get");
     }
     http.end();
   }
 
-  if ((now % 1000) == 0 && now != lastServiceTickMs) {
+  if ((now % 500) == 0 && now != lastServiceTickMs) { // Service tick every 500ms
     lastServiceTickMs = now;
-    for (uint8_t ch = 0; ch < 4; ch++) {
+    for (uint8_t ch = 0; ch < 2; ch++) {
       servicehandler(ch, serviceEnabled[ch], serviceDurationMs[ch], serviceOptoState[ch]);
     }
   }
