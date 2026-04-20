@@ -13,6 +13,7 @@ PlatformIO/Arduino firmware for an ESP32 that polls a backend for device command
 - Generates invoices when a relay task completes successfully.
 - Uses WiFiManager for runtime Wi-Fi and parameter configuration.
 - Starts the WiFiManager AP portal on every boot so the stored backend IP and other settings can be changed each startup.
+- The boot-time WiFiManager portal stays open for 5 minutes before timing out.
 - Prints one compact UART status line instead of verbose debug logs.
 
 ## Firmware Changelog
@@ -129,6 +130,7 @@ Firmware constants in `src/main.cpp`:
 - `HTTP_TIMEOUT_MS`
 - `INVOICE_HTTP_TIMEOUT_MS`
 - `WIFI_AP_CONFIG_ON_BOOT`
+- `WIFI_CONFIG_PORTAL_TIMEOUT_MS`
 - `RELAY_PULSE_MS`
 - `RELAY_WATCHDOG_GRACE_MS`
 - `STATUS_INTERVAL_MS`
