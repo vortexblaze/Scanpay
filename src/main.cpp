@@ -6,6 +6,12 @@
 #include <Preferences.h>
 
 // ======================= Pin Mapping (same as your code) =======================
+// #define RELAY0 23
+// #define RELAY1 5
+// #define RELAY2 4
+// #define RELAY3 13
+
+
 #define RELAY0 23
 #define RELAY1 5
 #define RELAY2 4
@@ -40,7 +46,6 @@ char ACTIVE_DEVICE_ID[16] = "";
 static Preferences prefs;
 static const char* NVS_NS = "scanpay";
 static const char* NVS_KEY_INV_DURATION = "inv_duration";
-static const bool WIFI_AP_CONFIG_ON_BOOT = true;
 static const uint32_t HTTP_POLL_INTERVAL_MS = 2000;
 static const uint16_t HTTP_TIMEOUT_MS = 2000;
 static const uint16_t INVOICE_HTTP_TIMEOUT_MS = 10000;
@@ -776,7 +781,7 @@ void setup() {
 
   loadPrefs();
 
-  if (connectWiFi(forceConfigPortal || WIFI_AP_CONFIG_ON_BOOT)) {
+  if (connectWiFi(forceConfigPortal)) {
     savePrefs();
   }
   
