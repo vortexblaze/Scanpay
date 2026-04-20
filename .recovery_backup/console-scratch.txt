@@ -1,0 +1,14 @@
+* [33m16a8435[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m 	modified:   src/main.cpp
+[31m|[m * [33m2d296cf[m[33m ([m[1;31morigin/checkout-main2[m[33m)[m Added a blocking simple latch release function
+[31m|[m * [33m7f05dce[m[33m ([m[1;31morigin/main2[m[33m)[m fix key too long
+[31m|[m * [33mce186fd[m update
+[31m|[m * [33m3168e88[m updated
+[31m|[m * [33mda0109d[m 	modified:   .vscode/extensions.json 	modified:   README.md 	modified:   src/main.cpp
+[31m|[m * [33mea2a565[m 	modified:   README.md modified:   src/main.cpp
+[31m|[m * [33m03b2e6a[m  Added Readme.md
+[31m|[m[31m/[m  
+[31m|[m * [33maa0f3b7[m[33m ([m[1;32mdev[m[33m)[m Revert "Added Round-Robin to the  Logic, using single Data Stream"
+[31m|[m * [33m2ebc51c[m[33m ([m[1;31morigin/dev[m[33m)[m Added Round-Robin to the  Logic, using single Data Stream
+[31m|[m[31m/[m  
+* [33mbb300bf[m add http use case
+* [33m5fdb0b1[m 	new file:   .gitignore 	new file:   .vscode/extensions.json 	new file:   README.md 	new file:   include/README 	new file:   lib/README 	new file:   platformio.ini 	new file:   src/main.cpp 	new file:   test/README
